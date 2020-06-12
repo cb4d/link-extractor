@@ -4,11 +4,11 @@ Personal project replicating the [Application Containerization and Microservice 
 
 ### Resources
 
-I've copied the tutorial instructions into (here)[/docs/docker-microservice-guide.html] for easy reference.
+I've copied the tutorial instructions into [here](./docs/docker-microservice-guide.html) for easy reference.
 
 ### Tasks
 
-1. Create a repo for the project and push to my personal github
+1. ~~Create a repo for the project and push to my personal github~~
 2. Clone the python link extractor in a submodule for reference
 3. Replicate the scraper script from step 0 using ktor
 4. Install and configure docker locally, for use in the subsequent steps
