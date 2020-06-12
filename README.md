@@ -4,7 +4,7 @@ Personal project replicating the [Application Containerization and Microservice 
 
 ### Resources
 
-I've copied the tutorial instructions into [/docs/docker-microservice-guide.html] for easy reference.
+I've copied the tutorial instructions into (here)[/docs/docker-microservice-guide.html] for easy reference.
 
 ### Tasks
 
