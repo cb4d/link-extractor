@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Application Containerization and Microservice Orchestration</title>
+  <meta charset="utf-8">
+</head>
+<body>
+  <div class="panel-left content resizable">
+    
+    <article class="post" itemscope="" itemtype="http://schema.org/BlogPosting">
+      
+      <header class="post-header">
+        <h1 class="post-title" itemprop="name headline">Application Containerization and Microservice Orchestration</h1>
+        <p class="post-meta"><time datetime="2018-09-22T00:00:00+00:00" itemprop="datePublished">Sep 22, 2018</time> • <span itemprop="author" itemscope="" itemtype="http://schema.org/Person"><span itemprop="name">@ibnesayeed</span></span></p>
+        
+      </header>
+      
+      <div class="post-content" itemprop="articleBody">
+        <p>In this tutorial we will learn about basic application containerization using Docker and running various components of an application as microservices.
+          We will utilize <a href="https://docs.docker.com/compose/">Docker Compose</a> for orchestration during the development.
+          This tutorial is targeted for beginners who have the basic familiarity with Docker.
+          If you are new to Docker, we recommend you check out <a href="/beginner-linux">Docker for Beginners</a> tutorial first.</p>
+          
+          <p>We will start from a basic Python script that scrapes links from a given web page and gradually evolve it into a multi-service application stack.
+            The demo code is available in the <a href="https://github.com/ibnesayeed/linkextractor">Link Extractor</a> repo.
+            The code is organized in steps that incrementally introduce changes and new concepts.
+            After completion, the application stack will contain the following microservices:</p>
+            
+            <ul>
+              <li>A web application written in PHP and served using Apache that takes a URL as the input and summarizes extracted links from it</li>
+              <li>The web application talks to an API server written in Python (and Ruby) that takes care of the link extraction and returns a JSON response</li>
+              <li>A Redis cache that is used by the API server to avoid repeated fetch and link extraction for pages that are already scraped</li>
+            </ul>
+            
+            <p>The API server will only load the page of the input link from the web if it is not in the cache.
+              The stack will eventually look like the figure below:</p>
+              
+              <p><img src="/images/linkextractor-microservice-diagram.png" alt="A Microservice Architecture of the Link Extractor Application"></p>
+              
+              <p>This tutorial was initially developed for a colloquium in the <a href="https://odu.edu/compsci">Computer Science Department</a> of the <a href="https://www.odu.edu/">Old Dominion University</a>, Norfolk, Virginia. A <a href="https://www.youtube.com/watch?v=Y_X0F2FgYm8">video recording</a>, <a href="https://www.slideshare.net/ibnesayeed/introducing-docker-application-containerization-service-orchestration">presentation slides</a>, and a brief description of the talk can be found in <a href="https://ws-dl.blogspot.com/2017/12/2017-12-03-introducing-docker.html">a blog post</a>.</p>
+              
+              <blockquote>
+                <p><strong>Steps:</strong></p>
+                <ul id="markdown-toc">
+                  <li><a href="#stage-setup" id="markdown-toc-stage-setup">Stage Setup</a></li>
+                  <li><a href="#step-0-basic-link-extractor-script" id="markdown-toc-step-0-basic-link-extractor-script">Step 0: Basic Link Extractor Script</a></li>
+                  <li><a href="#step-1-containerized-link-extractor-script" id="markdown-toc-step-1-containerized-link-extractor-script">Step 1: Containerized Link Extractor Script</a></li>
+                  <li><a href="#step-2-link-extractor-module-with-full-uri-and-anchor-text" id="markdown-toc-step-2-link-extractor-module-with-full-uri-and-anchor-text">Step 2: Link Extractor Module with Full URI and Anchor Text</a></li>
+                  <li><a href="#step-3-link-extractor-api-service" id="markdown-toc-step-3-link-extractor-api-service">Step 3: Link Extractor API Service</a></li>
+                  <li><a href="#step-4-link-extractor-api-and-web-front-end-services" id="markdown-toc-step-4-link-extractor-api-and-web-front-end-services">Step 4: Link Extractor API and Web Front End Services</a></li>
+                  <li><a href="#step-5-redis-service-for-caching" id="markdown-toc-step-5-redis-service-for-caching">Step 5: Redis Service for Caching</a></li>
+                  <li><a href="#step-6-swap-python-api-service-with-ruby" id="markdown-toc-step-6-swap-python-api-service-with-ruby">Step 6: Swap Python API Service with Ruby</a></li>
+                  <li><a href="#conclusions" id="markdown-toc-conclusions">Conclusions</a></li>
+                </ul>
+              </blockquote>
+              
+              <h2 id="stage-setup">Stage Setup</h2>
+              
+              <p>Let’s get started by first cloning the demo code repository, changing the working directory, and checking the <code class="language-plaintext highlighter-rouge">demo</code> branch out.</p>
+              
+              <pre><code class="language-.term1">git clone https://github.com/ibnesayeed/linkextractor.git
+                cd linkextractor
+                git checkout demo
+              </code></pre>
+              
+              <h2 id="step-0-basic-link-extractor-script">Step 0: Basic Link Extractor Script</h2>
+              
+              <p>Checkout the <code class="language-plaintext highlighter-rouge">step0</code> branch and list files in it.</p>
+              
+              <pre><code class="language-.term1">git checkout step0
+                tree
+              </code></pre>
+              
+              <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                ├── README.md
+                └── linkextractor.py
+                
+                0 directories, 2 files
+              </code></pre></div></div>
+              
+              <p>The <code class="language-plaintext highlighter-rouge">linkextractor.py</code> file is the interesting one here, so let’s look at its contents:</p>
+              
+              <pre><code class="language-.term1">cat linkextractor.py
+              </code></pre>
+              
+              <div class="language-py highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#!/usr/bin/env python
+              </span>
+              <span class="kn">import</span> <span class="nn">sys</span>
+              <span class="kn">import</span> <span class="nn">requests</span>
+              <span class="kn">from</span> <span class="nn">bs4</span> <span class="kn">import</span> <span class="n">BeautifulSoup</span>
+              
+              <span class="n">res</span> <span class="o">=</span> <span class="n">requests</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+              <span class="n">soup</span> <span class="o">=</span> <span class="n">BeautifulSoup</span><span class="p">(</span><span class="n">res</span><span class="p">.</span><span class="n">text</span><span class="p">,</span> <span class="s">"html.parser"</span><span class="p">)</span>
+              <span class="k">for</span> <span class="n">link</span> <span class="ow">in</span> <span class="n">soup</span><span class="p">.</span><span class="n">find_all</span><span class="p">(</span><span class="s">"a"</span><span class="p">):</span>
+              <span class="k">print</span><span class="p">(</span><span class="n">link</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"href"</span><span class="p">))</span>
+            </code></pre></div></div>
+            
+            <p>This is a simple Python script that imports three packages: <code class="language-plaintext highlighter-rouge">sys</code> from the standard library and two popular third-party packages <code class="language-plaintext highlighter-rouge">requests</code> and <code class="language-plaintext highlighter-rouge">bs4</code>.
+              User-supplied command line argument (which is expected to be a URL to an HTML page) is used to fetch the page using the <code class="language-plaintext highlighter-rouge">requests</code> package, then parsed using the <code class="language-plaintext highlighter-rouge">BeautifulSoup</code>.
+              The parsed object is then iterated over to find all the anchor elements (i.e., <code class="language-plaintext highlighter-rouge">&lt;a&gt;</code> tags) and print the value of their <code class="language-plaintext highlighter-rouge">href</code> attribute that contains the hyperlink.</p>
+              
+              <p>However, this seemingly simple script might not be the easiest one to run on a machine that does not meet its requirements.
+                The <code class="language-plaintext highlighter-rouge">README.md</code> file suggests how to run it, so let’s give it a try:</p>
+                
+                <pre><code class="language-.term1">./linkextractor.py http://example.com/
+                </code></pre>
+                
+                <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>bash: ./linkextractor.py: Permission denied
+                </code></pre></div></div>
+                
+                <p>When we tried to execute it as a script, we got the <code class="language-plaintext highlighter-rouge">Permission denied</code> error.
+                  Let’s check the current permissions on this file:</p>
+                  
+                  <pre><code class="language-.term1">ls -l linkextractor.py
+                  </code></pre>
+                  
+                  <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>-rw-r--r--    1 root     root           220 Sep 23 16:26 linkextractor.py
+                  </code></pre></div></div>
+                  
+                  <p>This current permission <code class="language-plaintext highlighter-rouge">-rw-r--r--</code> indicates that the script is not set to be executable.
+                    We can either change it by running <code class="language-plaintext highlighter-rouge">chmod a+x linkextractor.py</code> or run it as a Python program instead of a self-executing script as illustrated below:</p>
+                    
+                    <pre><code class="language-.term1">python linkextractor.py
+                    </code></pre>
+                    
+                    <div class="language-py highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">Traceback</span> <span class="p">(</span><span class="n">most</span> <span class="n">recent</span> <span class="n">call</span> <span class="n">last</span><span class="p">):</span>
+                      <span class="n">File</span> <span class="s">"linkextractor.py"</span><span class="p">,</span> <span class="n">line</span> <span class="mi">5</span><span class="p">,</span> <span class="ow">in</span> <span class="o">&lt;</span><span class="n">module</span><span class="o">&gt;</span>
+                      <span class="kn">from</span> <span class="nn">bs4</span> <span class="kn">import</span> <span class="n">BeautifulSoup</span>
+                      <span class="nb">ImportError</span><span class="p">:</span> <span class="n">No</span> <span class="n">module</span> <span class="n">named</span> <span class="n">bs4</span>
+                    </code></pre></div></div>
+                    
+                    <p>Here we got the first <code class="language-plaintext highlighter-rouge">ImportError</code> message because we are missing the third-party package needed by the script.
+                      We can install that Python package (and potentially other missing packages) using one of the many techniques to make it work, but it is too much work for such a simple script, which might not be obvious for those who are not familiar with Python’s ecosystem.</p>
+                      
+                      <p>Depending on which machine and operating system you are trying to run this script on, what software is already installed, and how much access you have, you might face some of these potential difficulties:</p>
+                      
+                      <ul>
+                        <li>Is the script executable?</li>
+                        <li>Is Python installed on the machine?</li>
+                        <li>Can you install software on the machine?</li>
+                        <li>Is <code class="language-plaintext highlighter-rouge">pip</code> installed?</li>
+                        <li>Are <code class="language-plaintext highlighter-rouge">requests</code> and <code class="language-plaintext highlighter-rouge">beautifulsoup4</code> Python libraries installed?</li>
+                      </ul>
+                      
+                      <p>This is where application containerization tools like Docker come in handy.
+                        In the next step we will try to containerize this script and make it easier to execute.</p>
+                        
+                        <h2 id="step-1-containerized-link-extractor-script">Step 1: Containerized Link Extractor Script</h2>
+                        
+                        <p>Checkout the <code class="language-plaintext highlighter-rouge">step1</code> branch and list files in it.</p>
+                        
+                        <pre><code class="language-.term1">git checkout step1
+                          tree
+                        </code></pre>
+                        
+                        <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                          ├── Dockerfile
+                          ├── README.md
+                          └── linkextractor.py
+                          
+                          0 directories, 3 files
+                        </code></pre></div></div>
+                        
+                        <p>We have added one new file (i.e., <code class="language-plaintext highlighter-rouge">Dockerfile</code>) in this step.
+                          Let’s look into its contents:</p>
+                          
+                          <pre><code class="language-.term1">cat Dockerfile
+                          </code></pre>
+                          
+                          <div class="language-dockerfile highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">FROM</span><span class="s">       python:3</span>
+                            <span class="k">LABEL</span><span class="s">      maintainer="Sawood Alam &lt;@ibnesayeed&gt;"</span>
+                            
+                            <span class="k">RUN        </span>pip <span class="nb">install </span>beautifulsoup4
+                            <span class="k">RUN        </span>pip <span class="nb">install </span>requests
+                            
+                            <span class="k">WORKDIR</span><span class="s">    /app</span>
+                            <span class="k">COPY</span><span class="s">       linkextractor.py /app/</span>
+                            <span class="k">RUN        </span><span class="nb">chmod </span>a+x linkextractor.py
+                            
+                            <span class="k">ENTRYPOINT</span><span class="s"> ["./linkextractor.py"]</span>
+                          </code></pre></div></div>
+                          
+                          <p>Using this <code class="language-plaintext highlighter-rouge">Dockerfile</code> we can prepare a Docker image for this script.
+                            We start from the official <code class="language-plaintext highlighter-rouge">python</code> Docker image that contains Python’s run-time environment as well as necessary tools to install Python packages and dependencies.
+                            We then add some metadata as labels (this step is not essential, but is a good practice nonetheless).
+                            Next two instructions run the <code class="language-plaintext highlighter-rouge">pip install</code> command to install the two third-party packages needed for the script to function properly.
+                            We then create a working directory <code class="language-plaintext highlighter-rouge">/app</code>, copy the <code class="language-plaintext highlighter-rouge">linkextractor.py</code> file in it, and change its permissions to make it an executable script.
+                            Finally, we set the script as the entrypoint for the image.</p>
+                            
+                            <p>So far, we have just described how we want our Docker image to be like, but didn’t really build one.
+                              So let’s do just that:</p>
+                              
+                              <pre><code class="language-.term1">docker image build -t linkextractor:step1 .
+                              </code></pre>
+                              
+                              <p>This command should yield an output as illustrated below:</p>
+                              
+                              <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Sending build context to Docker daemon  171.5kB
+                                Step 1/8 : FROM       python:3
+                                
+                                ... [OUTPUT REDACTED] ...
+                                
+                                Successfully built 226196ada9ab
+                                Successfully tagged linkextractor:step1
+                              </code></pre></div></div>
+                              
+                              <p>We have created a Docker image named <code class="language-plaintext highlighter-rouge">linkextractor:step1</code> based on the <code class="language-plaintext highlighter-rouge">Dockerfile</code> illustrated above.
+                                If the build was successful, we should be able to see it in the list of image:</p>
+                                
+                                <pre><code class="language-.term1">docker image ls
+                                </code></pre>
+                                
+                                <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+                                  linkextractor       step1               e067c677be37        2 seconds ago       931MB
+                                  python              3                   a9d071760c82        2 weeks ago         923MB
+                                </code></pre></div></div>
+                                
+                                <p>This image should have all the necessary ingredients packaged in it to run the script anywhere on a machine that supports Docker.
+                                  Now, let’s run a one-off container with this image and extract links from some live web pages:</p>
+                                  
+                                  <pre><code class="language-.term1">docker container run -it --rm linkextractor:step1 http://example.com/
+                                  </code></pre>
+                                  
+                                  <p>This outputs a single link that is present in the simple <a href="http://example.com/">example.com</a> web page:</p>
+                                  
+                                  <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>http://www.iana.org/domains/example
+                                  </code></pre></div></div>
+                                  
+                                  <p>Let’s try it on a web page with more links in it:</p>
+                                  
+                                  <pre><code class="language-.term1">docker container run -it --rm linkextractor:step1 https://training.play-with-docker.com/
+                                  </code></pre>
+                                  
+                                  <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/
+                                    /about/
+                                    #ops
+                                    #dev
+                                    /ops-stage1
+                                    /ops-stage2
+                                    /ops-stage3
+                                    /dev-stage1
+                                    /dev-stage2
+                                    /dev-stage3
+                                    /alacart
+                                    https://twitter.com/intent/tweet?text=Play with Docker Classroom&amp;url=https://training.play-with-docker.com/&amp;via=docker&amp;related=docker
+                                    https://facebook.com/sharer.php?u=https://training.play-with-docker.com/
+                                    https://plus.google.com/share?url=https://training.play-with-docker.com/
+                                    http://www.linkedin.com/shareArticle?mini=true&amp;url=https://training.play-with-docker.com/&amp;title=Play%20with%20Docker%20Classroom&amp;source=https://training.play-with-docker.com
+                                    https://2018.dockercon.com/
+                                    https://2018.dockercon.com/
+                                    https://success.docker.com/training/
+                                    https://community.docker.com/registrations/groups/4316
+                                    https://docker.com
+                                    https://www.docker.com
+                                    https://www.facebook.com/docker.run
+                                    https://twitter.com/docker
+                                    https://www.github.com/play-with-docker/play-with-docker.github.io
+                                  </code></pre></div></div>
+                                  
+                                  <p>This looks good, but we can improve the output.
+                                    For example, some links are relative, we can convert them into full URLs and also provide the anchor text they are linked to.
+                                    In the next step we will make these changes and some other improvements to the script.</p>
+                                    
+                                    <h2 id="step-2-link-extractor-module-with-full-uri-and-anchor-text">Step 2: Link Extractor Module with Full URI and Anchor Text</h2>
+                                    
+                                    <p>Checkout the <code class="language-plaintext highlighter-rouge">step2</code> branch and list files in it.</p>
+                                    
+                                    <pre><code class="language-.term1">git checkout step2
+                                      tree
+                                    </code></pre>
+                                    
+                                    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                                      ├── Dockerfile
+                                      ├── README.md
+                                      └── linkextractor.py
+                                      
+                                      0 directories, 3 files
+                                    </code></pre></div></div>
+                                    
+                                    <p>In this step the <code class="language-plaintext highlighter-rouge">linkextractor.py</code> script is updated with the following functional changes:</p>
+                                    
+                                    <ul>
+                                      <li>Paths are normalized to full URLs</li>
+                                      <li>Reporting both links and anchor texts</li>
+                                      <li>Usable as a module in other scripts</li>
+                                    </ul>
+                                    
+                                    <p>Let’s have a look at the updated script:</p>
+                                    
+                                    <pre><code class="language-.term1">cat linkextractor.py
+                                    </code></pre>
+                                    
+                                    <div class="language-py highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#!/usr/bin/env python
+                                    </span>
+                                    <span class="kn">import</span> <span class="nn">sys</span>
+                                    <span class="kn">import</span> <span class="nn">requests</span>
+                                    <span class="kn">from</span> <span class="nn">bs4</span> <span class="kn">import</span> <span class="n">BeautifulSoup</span>
+                                    <span class="kn">from</span> <span class="nn">urllib.parse</span> <span class="kn">import</span> <span class="n">urljoin</span>
+                                    
+                                    <span class="k">def</span> <span class="nf">extract_links</span><span class="p">(</span><span class="n">url</span><span class="p">):</span>
+                                    <span class="n">res</span> <span class="o">=</span> <span class="n">requests</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                    <span class="n">soup</span> <span class="o">=</span> <span class="n">BeautifulSoup</span><span class="p">(</span><span class="n">res</span><span class="p">.</span><span class="n">text</span><span class="p">,</span> <span class="s">"html.parser"</span><span class="p">)</span>
+                                    <span class="n">base</span> <span class="o">=</span> <span class="n">url</span>
+                                    <span class="c1"># TODO: Update base if a &lt;base&gt; element is present with the href attribute
+                                    </span>    <span class="n">links</span> <span class="o">=</span> <span class="p">[]</span>
+                                    <span class="k">for</span> <span class="n">link</span> <span class="ow">in</span> <span class="n">soup</span><span class="p">.</span><span class="n">find_all</span><span class="p">(</span><span class="s">"a"</span><span class="p">):</span>
+                                    <span class="n">links</span><span class="p">.</span><span class="n">append</span><span class="p">({</span>
+                                      <span class="s">"text"</span><span class="p">:</span> <span class="s">" "</span><span class="p">.</span><span class="n">join</span><span class="p">(</span><span class="n">link</span><span class="p">.</span><span class="n">text</span><span class="p">.</span><span class="n">split</span><span class="p">())</span> <span class="ow">or</span> <span class="s">"[IMG]"</span><span class="p">,</span>
+                                      <span class="s">"href"</span><span class="p">:</span> <span class="n">urljoin</span><span class="p">(</span><span class="n">base</span><span class="p">,</span> <span class="n">link</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"href"</span><span class="p">))</span>
+                                      <span class="p">})</span>
+                                      <span class="k">return</span> <span class="n">links</span>
+                                      
+                                      <span class="k">if</span> <span class="n">__name__</span> <span class="o">==</span> <span class="s">"__main__"</span><span class="p">:</span>
+                                      <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">:</span>
+                                      <span class="k">print</span><span class="p">(</span><span class="s">"</span><span class="se">\n</span><span class="s">Usage:</span><span class="se">\n\t</span><span class="s">{} &lt;URL&gt;</span><span class="se">\n</span><span class="s">"</span><span class="p">.</span><span class="nb">format</span><span class="p">(</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
+                                      <span class="n">sys</span><span class="p">.</span><span class="nb">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+                                      <span class="k">for</span> <span class="n">link</span> <span class="ow">in</span> <span class="n">extract_links</span><span class="p">(</span><span class="n">sys</span><span class="p">.</span><span class="n">argv</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]):</span>
+                                      <span class="k">print</span><span class="p">(</span><span class="s">"[{}]({})"</span><span class="p">.</span><span class="nb">format</span><span class="p">(</span><span class="n">link</span><span class="p">[</span><span class="s">"text"</span><span class="p">],</span> <span class="n">link</span><span class="p">[</span><span class="s">"href"</span><span class="p">]))</span>
+                                    </code></pre></div></div>
+                                    
+                                    <p>The link extraction logic is abstracted into a function <code class="language-plaintext highlighter-rouge">extract_links</code> that accepts a URL as a parameter and returns a list of objects containing anchor texts and normalized hyperlinks.
+                                      This functionality can now be imported into other scripts as a module (which we will utilize in the next step).</p>
+                                      
+                                      <p>Now, let’s build a new image and see these changes in effect:</p>
+                                      
+                                      <pre><code class="language-.term1">docker image build -t linkextractor:step2 .
+                                      </code></pre>
+                                      
+                                      <p>We have used a new tag <code class="language-plaintext highlighter-rouge">linkextractor:step2</code> for this image so that we don’t overwrite the image from the <code class="language-plaintext highlighter-rouge">step0</code> to illustrate that they can co-exist and containers can be run using either of these images.</p>
+                                      
+                                      <pre><code class="language-.term1">docker image ls
+                                      </code></pre>
+                                      
+                                      <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>REPOSITORY          TAG                 IMAGE ID            CREATED              SIZE
+                                        linkextractor       step2               be2939eada96        3 seconds ago        931MB
+                                        linkextractor       step1               673d045a822f        About a minute ago   931MB
+                                        python              3                   a9d071760c82        2 weeks ago          923MB
+                                      </code></pre></div></div>
+                                      
+                                      <p>Running a one-off container using the <code class="language-plaintext highlighter-rouge">linkextractor:step2</code> image should now yield an improved output:</p>
+                                      
+                                      <pre><code class="language-.term1">docker container run -it --rm linkextractor:step2 https://training.play-with-docker.com/
+                                      </code></pre>
+                                      
+                                      <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>[Play with Docker classroom](https://training.play-with-docker.com/)
+                                        [About](https://training.play-with-docker.com/about/)
+                                        [IT Pros and System Administrators](https://training.play-with-docker.com/#ops)
+                                        [Developers](https://training.play-with-docker.com/#dev)
+                                        [Stage 1: The Basics](https://training.play-with-docker.com/ops-stage1)
+                                        [Stage 2: Digging Deeper](https://training.play-with-docker.com/ops-stage2)
+                                        [Stage 3: Moving to Production](https://training.play-with-docker.com/ops-stage3)
+                                        [Stage 1: The Basics](https://training.play-with-docker.com/dev-stage1)
+                                        [Stage 2: Digging Deeper](https://training.play-with-docker.com/dev-stage2)
+                                        [Stage 3: Moving to Staging](https://training.play-with-docker.com/dev-stage3)
+                                        [Full list of individual labs](https://training.play-with-docker.com/alacart)
+                                        [[IMG]](https://twitter.com/intent/tweet?text=Play with Docker Classroom&amp;url=https://training.play-with-docker.com/&amp;via=docker&amp;related=docker)
+                                        [[IMG]](https://facebook.com/sharer.php?u=https://training.play-with-docker.com/)
+                                        [[IMG]](https://plus.google.com/share?url=https://training.play-with-docker.com/)
+                                        [[IMG]](http://www.linkedin.com/shareArticle?mini=true&amp;url=https://training.play-with-docker.com/&amp;title=Play%20with%20Docker%20Classroom&amp;source=https://training.play-with-docker.com)
+                                        [[IMG]](https://2018.dockercon.com/)
+                                        [DockerCon 2018 in San Francisco](https://2018.dockercon.com/)
+                                        [training.docker.com](https://success.docker.com/training/)
+                                        [Register here](https://community.docker.com/registrations/groups/4316)
+                                        [Docker, Inc.](https://docker.com)
+                                        [[IMG]](https://www.docker.com)
+                                        [[IMG]](https://www.facebook.com/docker.run)
+                                        [[IMG]](https://twitter.com/docker)
+                                        [[IMG]](https://www.github.com/play-with-docker/play-with-docker.github.io)
+                                      </code></pre></div></div>
+                                      
+                                      <p>Running a container using the previous image <code class="language-plaintext highlighter-rouge">linkextractor:step1</code> should still result in the old output:</p>
+                                      
+                                      <pre><code class="language-.term1">docker container run -it --rm linkextractor:step1 https://training.play-with-docker.com/
+                                      </code></pre>
+                                      
+                                      <p>So far, we have learned how to containerize a script with its necessary dependencies to make it more portable.
+                                        We have also learned how to make changes in the application and build different variants of Docker images that can co-exist.
+                                        In the next step we will build a web service that will utilize this script and will make the service run inside a Docker container.</p>
+                                        
+                                        <h2 id="step-3-link-extractor-api-service">Step 3: Link Extractor API Service</h2>
+                                        
+                                        <p>Checkout the <code class="language-plaintext highlighter-rouge">step3</code> branch and list files in it.</p>
+                                        
+                                        <pre><code class="language-.term1">git checkout step3
+                                          tree
+                                        </code></pre>
+                                        
+                                        <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                                          ├── Dockerfile
+                                          ├── README.md
+                                          ├── linkextractor.py
+                                          ├── main.py
+                                          └── requirements.txt
+                                          
+                                          0 directories, 5 files
+                                        </code></pre></div></div>
+                                        
+                                        <p>The following changes have been made in this step:</p>
+                                        
+                                        <ul>
+                                          <li>Added a server script <code class="language-plaintext highlighter-rouge">main.py</code> that utilizes the link extraction module written in the last step</li>
+                                          <li>The <code class="language-plaintext highlighter-rouge">Dockerfile</code> is updated to refer to the <code class="language-plaintext highlighter-rouge">main.py</code> file instead</li>
+                                          <li>Server is accessible as a WEB API at <code class="language-plaintext highlighter-rouge">http://&lt;hostname&gt;[:&lt;prt&gt;]/api/&lt;url&gt;</code></li>
+                                          <li>Dependencies are moved to the <code class="language-plaintext highlighter-rouge">requirements.txt</code> file</li>
+                                          <li>Needs port mapping to make the service accessible outside of the container (the <code class="language-plaintext highlighter-rouge">Flask</code> server used here listens on port <code class="language-plaintext highlighter-rouge">5000</code> by default)</li>
+                                        </ul>
+                                        
+                                        <p>Let’s first look at the <code class="language-plaintext highlighter-rouge">Dockerfile</code> for changes:</p>
+                                        
+                                        <pre><code class="language-.term1">cat Dockerfile
+                                        </code></pre>
+                                        
+                                        <div class="language-dockerfile highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">FROM</span><span class="s">       python:3</span>
+                                          <span class="k">LABEL</span><span class="s">      maintainer="Sawood Alam &lt;@ibnesayeed&gt;"</span>
+                                          
+                                          <span class="k">WORKDIR</span><span class="s">    /app</span>
+                                          <span class="k">COPY</span><span class="s">       requirements.txt /app/</span>
+                                          <span class="k">RUN        </span>pip <span class="nb">install</span> <span class="nt">-r</span> requirements.txt
+                                          
+                                          <span class="k">COPY</span><span class="s">       *.py /app/</span>
+                                          <span class="k">RUN        </span><span class="nb">chmod </span>a+x <span class="k">*</span>.py
+                                          
+                                          <span class="k">CMD</span><span class="s">        ["./main.py"]</span>
+                                        </code></pre></div></div>
+                                        
+                                        <p>Since we have started using <code class="language-plaintext highlighter-rouge">requirements.txt</code> for dependencies, we no longer need to run <code class="language-plaintext highlighter-rouge">pip install</code> command for individual packages.
+                                          The <code class="language-plaintext highlighter-rouge">ENTRYPOINT</code> directive is replaced with the <code class="language-plaintext highlighter-rouge">CMD</code> and it is referring to the <code class="language-plaintext highlighter-rouge">main.py</code> script that has the server code it because we do not want to use this image for one-off commands now.</p>
+                                          
+                                          <p>The <code class="language-plaintext highlighter-rouge">linkextractor.py</code> module remains unchanged in this step, so let’s look into the newly added <code class="language-plaintext highlighter-rouge">main.py</code> file:</p>
+                                          
+                                          <pre><code class="language-.term1">cat main.py
+                                          </code></pre>
+                                          
+                                          <div class="language-py highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#!/usr/bin/env python
+                                          </span>
+                                          <span class="kn">from</span> <span class="nn">flask</span> <span class="kn">import</span> <span class="n">Flask</span>
+                                          <span class="kn">from</span> <span class="nn">flask</span> <span class="kn">import</span> <span class="n">request</span>
+                                          <span class="kn">from</span> <span class="nn">flask</span> <span class="kn">import</span> <span class="n">jsonify</span>
+                                          <span class="kn">from</span> <span class="nn">linkextractor</span> <span class="kn">import</span> <span class="n">extract_links</span>
+                                          
+                                          <span class="n">app</span> <span class="o">=</span> <span class="n">Flask</span><span class="p">(</span><span class="n">__name__</span><span class="p">)</span>
+                                          
+                                          <span class="o">@</span><span class="n">app</span><span class="p">.</span><span class="n">route</span><span class="p">(</span><span class="s">"/"</span><span class="p">)</span>
+                                          <span class="k">def</span> <span class="nf">index</span><span class="p">():</span>
+                                          <span class="k">return</span> <span class="s">"Usage: http://&lt;hostname&gt;[:&lt;prt&gt;]/api/&lt;url&gt;"</span>
+                                          
+                                          <span class="o">@</span><span class="n">app</span><span class="p">.</span><span class="n">route</span><span class="p">(</span><span class="s">"/api/&lt;path:url&gt;"</span><span class="p">)</span>
+                                          <span class="k">def</span> <span class="nf">api</span><span class="p">(</span><span class="n">url</span><span class="p">):</span>
+                                          <span class="n">qs</span> <span class="o">=</span> <span class="n">request</span><span class="p">.</span><span class="n">query_string</span><span class="p">.</span><span class="n">decode</span><span class="p">(</span><span class="s">"utf-8"</span><span class="p">)</span>
+                                          <span class="k">if</span> <span class="n">qs</span> <span class="o">!=</span> <span class="s">""</span><span class="p">:</span>
+                                          <span class="n">url</span> <span class="o">+=</span> <span class="s">"?"</span> <span class="o">+</span> <span class="n">qs</span>
+                                          <span class="n">links</span> <span class="o">=</span> <span class="n">extract_links</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                          <span class="k">return</span> <span class="n">jsonify</span><span class="p">(</span><span class="n">links</span><span class="p">)</span>
+                                          
+                                          <span class="n">app</span><span class="p">.</span><span class="n">run</span><span class="p">(</span><span class="n">host</span><span class="o">=</span><span class="s">"0.0.0.0"</span><span class="p">)</span>
+                                        </code></pre></div></div>
+                                        
+                                        <p>Here, we are importing <code class="language-plaintext highlighter-rouge">extract_links</code> function from the <code class="language-plaintext highlighter-rouge">linkextractor</code> module and converting the returned list of objects into a JSON response.</p>
+                                        
+                                        <p>It’s time to build a new image with these changes in place:</p>
+                                        
+                                        <pre><code class="language-.term1">docker image build -t linkextractor:step3 .
+                                        </code></pre>
+                                        
+                                        <p>Then run the container in detached mode (<code class="language-plaintext highlighter-rouge">-d</code> flag) so that the terminal is available for other commands while the container is still running.
+                                          Note that we are mapping the port <code class="language-plaintext highlighter-rouge">5000</code> of the container with the <code class="language-plaintext highlighter-rouge">5000</code> of the host (using <code class="language-plaintext highlighter-rouge">-p 5000:5000</code> argument) to make it accessible from the host.
+                                          We are also assigning a name (<code class="language-plaintext highlighter-rouge">--name=linkextractor</code>) to the container to make it easier to see logs and kill or remove the container.</p>
+                                          
+                                          <pre><code class="language-.term1">docker container run -d -p 5000:5000 --name=linkextractor linkextractor:step3
+                                          </code></pre>
+                                          
+                                          <p>If things go well, we should be able to see the container being listed in <code class="language-plaintext highlighter-rouge">Up</code> condition:</p>
+                                          
+                                          <pre><code class="language-.term1">docker container ls
+                                          </code></pre>
+                                          
+                                          <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>CONTAINER ID        IMAGE                 COMMAND             CREATED             STATUSPORTS                    NAMES
+                                            d69c0150a754        linkextractor:step3   "./main.py"         9 seconds ago       Up 8 seconds0.0.0.0:5000-&gt;5000/tcp   linkextractor
+                                          </code></pre></div></div>
+                                          
+                                          <p>We can now make an HTTP request in the form <code class="language-plaintext highlighter-rouge">/api/&lt;url&gt;</code> to talk to this server and fetch the response containing extracted links:</p>
+                                          
+                                          <pre><code class="language-.term1">curl -i http://localhost:5000/api/http://example.com/
+                                          </code></pre>
+                                          
+                                          <div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">HTTP/</span><span class="mf">1.0</span><span class="w"> </span><span class="mi">200</span><span class="w"> </span><span class="err">OK</span><span class="w">
+                                          </span><span class="err">Content-Type:</span><span class="w"> </span><span class="err">application/json</span><span class="w">
+                                          </span><span class="err">Content-Length:</span><span class="w"> </span><span class="mi">78</span><span class="w">
+                                          </span><span class="err">Server:</span><span class="w"> </span><span class="err">Werkzeug/</span><span class="mf">0.14</span><span class="err">.</span><span class="mi">1</span><span class="w"> </span><span class="err">Python/</span><span class="mf">3.7</span><span class="err">.</span><span class="mi">0</span><span class="w">
+                                          </span><span class="err">Date:</span><span class="w"> </span><span class="err">Sun,</span><span class="w"> </span><span class="mi">23</span><span class="w"> </span><span class="err">Sep</span><span class="w"> </span><span class="mi">2018</span><span class="w"> </span><span class="mi">20</span><span class="err">:</span><span class="mi">52</span><span class="err">:</span><span class="mi">56</span><span class="w"> </span><span class="err">GMT</span><span class="w">
+                                            
+                                          </span><span class="p">[{</span><span class="nl">"href"</span><span class="p">:</span><span class="s2">"http://www.iana.org/domains/example"</span><span class="p">,</span><span class="nl">"text"</span><span class="p">:</span><span class="s2">"More information..."</span><span class="p">}]</span><span class="w">
+                                          </span></code></pre></div></div>
+                                          
+                                          <p>Now, we have the API service running that accepts requests in the form <code class="language-plaintext highlighter-rouge">/api/&lt;url&gt;</code> and responds with a JSON containing hyperlinks and anchor texts of all the links present in the web page at give <code class="language-plaintext highlighter-rouge">&lt;url&gt;</code>.</p>
+                                          
+                                          <p>Since the container is running in detached mode, so we can’t see what’s happening inside, but we can see logs using the name <code class="language-plaintext highlighter-rouge">linkextractor</code> we assigned to our container:</p>
+                                          
+                                          <pre><code class="language-.term1">docker container logs linkextractor
+                                          </code></pre>
+                                          
+                                          <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>* Serving Flask app "main" (lazy loading)
+                                            * Environment: production
+                                            WARNING: Do not use the development server in a production environment.
+                                            Use a production WSGI server instead.
+                                            * Debug mode: off
+                                            * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+                                            172.17.0.1 - - [23/Sep/2018 20:52:56] "GET /api/http://example.com/ HTTP/1.1" 200 -
+                                          </code></pre></div></div>
+                                          
+                                          <p>We can see the messages logged when the server came up, and an entry of the request log when we ran the <code class="language-plaintext highlighter-rouge">curl</code> command.
+                                            Now we can kill and remove this container:</p>
+                                            
+                                            <pre><code class="language-.term1">docker container rm -f linkextractor
+                                            </code></pre>
+                                            
+                                            <p>In this step we have successfully ran an API service listening on port <code class="language-plaintext highlighter-rouge">5000</code>.
+                                              This is great, but APIs and JSON responses are for machines, so in the next step we will run a web service with a human-friendly web interface in addition to this API service.</p>
+                                              
+                                              <h2 id="step-4-link-extractor-api-and-web-front-end-services">Step 4: Link Extractor API and Web Front End Services</h2>
+                                              
+                                              <p>Checkout the <code class="language-plaintext highlighter-rouge">step4</code> branch and list files in it.</p>
+                                              
+                                              <pre><code class="language-.term1">git checkout step4
+                                                tree
+                                              </code></pre>
+                                              
+                                              <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                                                ├── README.md
+                                                ├── api
+                                                │   ├── Dockerfile
+                                                │   ├── linkextractor.py
+                                                │   ├── main.py
+                                                │   └── requirements.txt
+                                                ├── docker-compose.yml
+                                                └── www
+                                                └── index.php
+                                                
+                                                2 directories, 7 files
+                                              </code></pre></div></div>
+                                              
+                                              <p>In this step the following changes have been made since the last step:</p>
+                                              
+                                              <ul>
+                                                <li>The link extractor JSON API service (written in Python) is moved in a separate <code class="language-plaintext highlighter-rouge">./api</code> folder that has the exact same code as in the previous step</li>
+                                                <li>A web front-end application is written in PHP under <code class="language-plaintext highlighter-rouge">./www</code> folder that talks to the JSON API</li>
+                                                <li>The PHP application is mounted inside the official <code class="language-plaintext highlighter-rouge">php:7-apache</code> Docker image for easier modification during the development</li>
+                                                <li>The web application is made accessible at <code class="language-plaintext highlighter-rouge">http://&lt;hostname&gt;[:&lt;prt&gt;]/?url=&lt;url-encoded-url&gt;</code></li>
+                                                <li>An environment variable <code class="language-plaintext highlighter-rouge">API_ENDPOINT</code> is used inside the PHP application to configure it to talk to the JSON API server</li>
+                                                <li>A <code class="language-plaintext highlighter-rouge">docker-compose.yml</code> file is written to build various components and glue them together</li>
+                                              </ul>
+                                              
+                                              <p>In this step we are planning to run two separate containers, one for the API and the other for the web interface.
+                                                The latter needs a way to talk to the API server.
+                                                For the two containers to be able to talk to each other, we can either map their ports on the host machine and use that for request routing or we can place the containers in a single private network and access directly.
+                                                Docker has an excellent support of networking and provides helpful commands to deal with networks.
+                                                Additionally, in a Docker network containers identify themselves using their names as hostnames to avoid hunting for their IP addresses in the private network.
+                                                However, we are not going to do any of this manually, instead we will be using Docker Compose to automate many of these tasks.</p>
+                                                
+                                                <p>So let’s look at the <code class="language-plaintext highlighter-rouge">docker-compose.yml</code> file we have:</p>
+                                                
+                                                <pre><code class="language-.term1">cat docker-compose.yml
+                                                </code></pre>
+                                                
+                                                <div class="language-yml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">version</span><span class="pi">:</span> <span class="s1">'</span><span class="s">3'</span>
+                                                  
+                                                  <span class="na">services</span><span class="pi">:</span>
+                                                  <span class="na">api</span><span class="pi">:</span>
+                                                  <span class="na">image</span><span class="pi">:</span> <span class="s">linkextractor-api:step4-python</span>
+                                                  <span class="na">build</span><span class="pi">:</span> <span class="s">./api</span>
+                                                  <span class="na">ports</span><span class="pi">:</span>
+                                                  <span class="pi">-</span> <span class="s2">"</span><span class="s">5000:5000"</span>
+                                                  <span class="na">web</span><span class="pi">:</span>
+                                                  <span class="na">image</span><span class="pi">:</span> <span class="s">php:7-apache</span>
+                                                  <span class="na">ports</span><span class="pi">:</span>
+                                                  <span class="pi">-</span> <span class="s2">"</span><span class="s">80:80"</span>
+                                                  <span class="na">environment</span><span class="pi">:</span>
+                                                  <span class="pi">-</span> <span class="s">API_ENDPOINT=http://api:5000/api/</span>
+                                                  <span class="na">volumes</span><span class="pi">:</span>
+                                                  <span class="pi">-</span> <span class="s">./www:/var/www/html</span>
+                                                </code></pre></div></div>
+                                                
+                                                <p>This is a simple YAML file that describes the two services <code class="language-plaintext highlighter-rouge">api</code> and <code class="language-plaintext highlighter-rouge">web</code>.
+                                                  The <code class="language-plaintext highlighter-rouge">api</code> service will use the <code class="language-plaintext highlighter-rouge">linkextractor-api:step4-python</code> image that is not built yet, but will be built on-demand using the <code class="language-plaintext highlighter-rouge">Dockerfile</code> from the <code class="language-plaintext highlighter-rouge">./api</code> directory.
+                                                  This service will be exposed on the port <code class="language-plaintext highlighter-rouge">5000</code> of the host.</p>
+                                                  
+                                                  <p>The second service named <code class="language-plaintext highlighter-rouge">web</code> will use official <code class="language-plaintext highlighter-rouge">php:7-apache</code> image directly from the DockerHub, that’s why we do not have a <code class="language-plaintext highlighter-rouge">Dockerfile</code> for it.
+                                                    The service will be exposed on the default HTTP port (i.e., <code class="language-plaintext highlighter-rouge">80</code>).
+                                                    We will supply an environment variable named <code class="language-plaintext highlighter-rouge">API_ENDPOINT</code> with the value <code class="language-plaintext highlighter-rouge">http://api:5000/api/</code> to tell the PHP script where to connect to for the API access.
+                                                    Notice that we are not using an IP address here, instead, <code class="language-plaintext highlighter-rouge">api:5000</code> is being used because we will have a dynamic hostname entry in the private network for the API service matching its service name.
+                                                    Finally, we will bind mount the <code class="language-plaintext highlighter-rouge">./www</code> folder to make the <code class="language-plaintext highlighter-rouge">index.php</code> file available inside of the <code class="language-plaintext highlighter-rouge">web</code> service container at <code class="language-plaintext highlighter-rouge">/var/www/html</code>, which is the default web root for the Apache web server.</p>
+                                                    
+                                                    <p>Now, let’s have a look at the user-facing <code class="language-plaintext highlighter-rouge">www/index.php</code> file:</p>
+                                                    
+                                                    <pre><code class="language-.term1">cat www/index.php
+                                                    </code></pre>
+                                                    
+                                                    <p>This is a long file that mainly contains all the markup and styles of the page.
+                                                      However, the important block of code is in the beginning of the file as illustrated below:</p>
+                                                      
+                                                      <div class="language-php highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">$api_endpoint</span> <span class="o">=</span> <span class="nv">$_ENV</span><span class="p">[</span><span class="s2">"API_ENDPOINT"</span><span class="p">]</span> <span class="o">?:</span> <span class="s2">"http://localhost:5000/api/"</span><span class="p">;</span>
+                                                        <span class="nv">$url</span> <span class="o">=</span> <span class="s2">""</span><span class="p">;</span>
+                                                        <span class="k">if</span><span class="p">(</span><span class="nb">isset</span><span class="p">(</span><span class="nv">$_GET</span><span class="p">[</span><span class="s2">"url"</span><span class="p">])</span> <span class="o">&amp;&amp;</span> <span class="nv">$_GET</span><span class="p">[</span><span class="s2">"url"</span><span class="p">]</span> <span class="o">!=</span> <span class="s2">""</span><span class="p">)</span> <span class="p">{</span>
+                                                          <span class="nv">$url</span> <span class="o">=</span> <span class="nv">$_GET</span><span class="p">[</span><span class="s2">"url"</span><span class="p">];</span>
+                                                          <span class="nv">$json</span> <span class="o">=</span> <span class="o">@</span><span class="nb">file_get_contents</span><span class="p">(</span><span class="nv">$api_endpoint</span> <span class="o">.</span> <span class="nv">$url</span><span class="p">);</span>
+                                                          <span class="k">if</span><span class="p">(</span><span class="nv">$json</span> <span class="o">==</span> <span class="kc">false</span><span class="p">)</span> <span class="p">{</span>
+                                                            <span class="nv">$err</span> <span class="o">=</span> <span class="s2">"Something is wrong with the URL: "</span> <span class="o">.</span> <span class="nv">$url</span><span class="p">;</span>
+                                                            <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                                                              <span class="nv">$links</span> <span class="o">=</span> <span class="nb">json_decode</span><span class="p">(</span><span class="nv">$json</span><span class="p">,</span> <span class="kc">true</span><span class="p">);</span>
+                                                              <span class="nv">$domains</span> <span class="o">=</span> <span class="p">[];</span>
+                                                              <span class="k">foreach</span><span class="p">(</span><span class="nv">$links</span> <span class="k">as</span> <span class="nv">$link</span><span class="p">)</span> <span class="p">{</span>
+                                                                <span class="nb">array_push</span><span class="p">(</span><span class="nv">$domains</span><span class="p">,</span> <span class="nb">parse_url</span><span class="p">(</span><span class="nv">$link</span><span class="p">[</span><span class="s2">"href"</span><span class="p">],</span> <span class="kc">PHP_URL_HOST</span><span class="p">));</span>
+                                                                <span class="p">}</span>
+                                                                <span class="nv">$domainct</span> <span class="o">=</span> <span class="o">@</span><span class="nb">array_count_values</span><span class="p">(</span><span class="nv">$domains</span><span class="p">);</span>
+                                                                <span class="nb">arsort</span><span class="p">(</span><span class="nv">$domainct</span><span class="p">);</span>
+                                                                <span class="p">}</span>
+                                                                <span class="p">}</span>
+                                                              </code></pre></div></div>
+                                                              
+                                                              <p>The <code class="language-plaintext highlighter-rouge">$api_endpoint</code> variable is initialized with the value of the environment variable supplied from the <code class="language-plaintext highlighter-rouge">docker-compose.yml</code> file as <code class="language-plaintext highlighter-rouge">$_ENV["API_ENDPOINT"]</code> (otherwise falls back to a default value of <code class="language-plaintext highlighter-rouge">http://localhost:5000/api/</code>).
+                                                                The request is made using <code class="language-plaintext highlighter-rouge">file_get_contents</code> function that uses the <code class="language-plaintext highlighter-rouge">$api_endpoint</code> variable and user supplied URL from <code class="language-plaintext highlighter-rouge">$_GET["url"]</code>.
+                                                                Some analysis and transformations are performed on the received response that are later used in the markup to populate the page.</p>
+                                                                
+                                                                <p>Let’s bring these services up in detached mode using <code class="language-plaintext highlighter-rouge">docker-compose</code> utility:</p>
+                                                                
+                                                                <pre><code class="language-.term1">docker-compose up -d --build
+                                                                </code></pre>
+                                                                
+                                                                <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Creating network "linkextractor_default" with the default driver
+                                                                  Pulling web (php:7-apache)...
+                                                                  7-apache: Pulling from library/php
+                                                                  
+                                                                  ... [OUTPUT REDACTED] ...
+                                                                  
+                                                                  Status: Downloaded newer image for php:7-apache
+                                                                  Building api
+                                                                  Step 1/8 : FROM       python:3
+                                                                  
+                                                                  ... [OUTPUT REDACTED] ...
+                                                                  
+                                                                  Successfully built 1f419be1c2bf
+                                                                  Successfully tagged linkextractor-api:step4-python
+                                                                  Creating linkextractor_web_1 ... done
+                                                                  Creating linkextractor_api_1 ... done
+                                                                </code></pre></div></div>
+                                                                
+                                                                <p>This output shows that Docker Compose automatically created a network named <code class="language-plaintext highlighter-rouge">linkextractor_default</code>, pulled <code class="language-plaintext highlighter-rouge">php:7-apache</code> image from DockerHub, built <code class="language-plaintext highlighter-rouge">api:python</code> image using our local <code class="language-plaintext highlighter-rouge">Dockerfile</code>, and finally, spun two containers <code class="language-plaintext highlighter-rouge">linkextractor_web_1</code> and <code class="language-plaintext highlighter-rouge">linkextractor_api_1</code> that correspond to the two services we have defined in the YAML file above.</p>
+                                                                
+                                                                <p>Checking for the list of running containers confirms that the two services are indeed running:</p>
+                                                                
+                                                                <pre><code class="language-.term1">docker container ls
+                                                                </code></pre>
+                                                                
+                                                                <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>CONTAINER ID        IMAGE               COMMAND                  CREATED             STATUS   PORTS                    NAMES
+                                                                  268b021b5a2c        php:7-apache                     "docker-php-entrypoi…"   3 minutes ago       Up 3 minutes        0.0.0.0:80-&gt;80/tcp       linkextractor_web_1
+                                                                  5bc266b4e43d        linkextractor-api:step4-python   "./main.py"              3 minutes ago       Up 3 minutes        0.0.0.0:5000-&gt;5000/tcp   linkextractor_api_1
+                                                                </code></pre></div></div>
+                                                                
+                                                                <p>We should now be able to talk to the API service as before:</p>
+                                                                
+                                                                <pre><code class="language-.term1">curl -i http://localhost:5000/api/http://example.com/
+                                                                </code></pre>
+                                                                
+                                                                <p>To access the web interface <a href="/" data-term=".term1" data-port="80">click to open the Link Extractor</a>.
+                                                                  Then fill the form with <code class="language-plaintext highlighter-rouge">https://training.play-with-docker.com/</code> (or any HTML page URL of your choice) and submit to extract links from it.</p>
+                                                                  
+                                                                  <p>We have just created an application with microservice architecture, isolating individual tasks in separate services as opposed to monolithic applications where everything is put together in a single unit.
+                                                                    Microservice applications are relatively easier to scale, maintains, and move around.
+                                                                    They also allow easy swapping of components with an equivalent service.
+                                                                    More on that later.</p>
+                                                                    
+                                                                    <p>Now, let’s modify the <code class="language-plaintext highlighter-rouge">www/index.php</code> file to replace all occurrences of <code class="language-plaintext highlighter-rouge">Link Extractor</code> with <code class="language-plaintext highlighter-rouge">Super Link Extractor</code>:</p>
+                                                                    
+                                                                    <pre><code class="language-.term1">sed -i 's/Link Extractor/Super Link Extractor/g' www/index.php
+                                                                    </code></pre>
+                                                                    
+                                                                    <p>Reloading the web interface of the application (or <a href="/" data-term=".term1" data-port="80">clicking here</a>) should now reflect this change in the title, header, and footer.
+                                                                      This is happening because the <code class="language-plaintext highlighter-rouge">./www</code> folder is bind mounted inside of the container, so any changes made outside will reflect inside the container or the vice versa.
+                                                                      This approach is very helpful in development, but in the production environment we would prefer our Docker images to be self-contained.
+                                                                      Let’s revert these changes now to clean the Git tracking:</p>
+                                                                      
+                                                                      <pre><code class="language-.term1">git reset --hard
+                                                                      </code></pre>
+                                                                      
+                                                                      <p>Before we move on to the next step we need to shut these services down, but Docker Compose can help us take care of it very easily:</p>
+                                                                      
+                                                                      <pre><code class="language-.term1">docker-compose down
+                                                                      </code></pre>
+                                                                      
+                                                                      <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Stopping linkextractor_api_1 ... done
+                                                                        Stopping linkextractor_web_1 ... done
+                                                                        Removing linkextractor_api_1 ... done
+                                                                        Removing linkextractor_web_1 ... done
+                                                                        Removing network linkextractor_default
+                                                                      </code></pre></div></div>
+                                                                      
+                                                                      <p>In the next step we will add one more service to our stack and will build a self-contained custom image for our web interface service.</p>
+                                                                      
+                                                                      <h2 id="step-5-redis-service-for-caching">Step 5: Redis Service for Caching</h2>
+                                                                      
+                                                                      <p>Checkout the <code class="language-plaintext highlighter-rouge">step5</code> branch and list files in it.</p>
+                                                                      
+                                                                      <pre><code class="language-.term1">git checkout step5
+                                                                        tree
+                                                                      </code></pre>
+                                                                      
+                                                                      <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                                                                        ├── README.md
+                                                                        ├── api
+                                                                        │   ├── Dockerfile
+                                                                        │   ├── linkextractor.py
+                                                                        │   ├── main.py
+                                                                        │   └── requirements.txt
+                                                                        ├── docker-compose.yml
+                                                                        └── www
+                                                                        ├── Dockerfile
+                                                                        └── index.php
+                                                                        
+                                                                        2 directories, 8 files
+                                                                      </code></pre></div></div>
+                                                                      
+                                                                      <p>Some noticeable changes from the previous step are as following:</p>
+                                                                      
+                                                                      <ul>
+                                                                        <li>Another <code class="language-plaintext highlighter-rouge">Dockerfile</code> is added in the <code class="language-plaintext highlighter-rouge">./www</code> folder for the PHP web application to build a self-contained image and avoid live file mounting</li>
+                                                                        <li>A Redis container is added for caching using the official Redis Docker image</li>
+                                                                        <li>The API service talks to the Redis service to avoid downloading and parsing pages that were already scraped before</li>
+                                                                        <li>A <code class="language-plaintext highlighter-rouge">REDIS_URL</code> environment variable is added to the API service to allow it to connect to the Redis cache</li>
+                                                                      </ul>
+                                                                      
+                                                                      <p>Let’s first inspect the newly added <code class="language-plaintext highlighter-rouge">Dockerfile</code> under the <code class="language-plaintext highlighter-rouge">./www</code> folder:</p>
+                                                                      
+                                                                      <pre><code class="language-.term1">cat www/Dockerfile
+                                                                      </code></pre>
+                                                                      
+                                                                      <div class="language-dockerfile highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">FROM</span><span class="s">       php:7-apache</span>
+                                                                        <span class="k">LABEL</span><span class="s">      maintainer="Sawood Alam &lt;@ibnesayeed&gt;"</span>
+                                                                        
+                                                                        <span class="k">ENV</span><span class="s">        API_ENDPOINT="http://localhost:5000/api/"</span>
+                                                                        
+                                                                        <span class="k">COPY</span><span class="s">       . /var/www/html/</span>
+                                                                      </code></pre></div></div>
+                                                                      
+                                                                      <p>This is a rather simple <code class="language-plaintext highlighter-rouge">Dockerfile</code> that uses the official <code class="language-plaintext highlighter-rouge">php:7-apache</code> image as the base and copies all the files from the <code class="language-plaintext highlighter-rouge">./www</code> folder into the <code class="language-plaintext highlighter-rouge">/var/www/html/</code> folder of the image.
+                                                                        This is exactly what was happening in the previous step, but that was bind mounted using a volume, while here we are making the code part of the self-contained image.
+                                                                        We have also added the <code class="language-plaintext highlighter-rouge">API_ENDPOINT</code> environment variable here with a default value, which implicitly suggests that this is an important information that needs to be present in order for the service to function properly (and should be customized at run time with an appropriate value).</p>
+                                                                        
+                                                                        <p>Next, we will look at the API server’s <code class="language-plaintext highlighter-rouge">api/main.py</code> file where we are utilizing the Redis cache:</p>
+                                                                        
+                                                                        <pre><code class="language-.term1">cat api/main.py
+                                                                        </code></pre>
+                                                                        
+                                                                        <p>The file has many lines, but the important bits are as illustrated below:</p>
+                                                                        
+                                                                        <div class="language-py highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">redis_conn</span> <span class="o">=</span> <span class="n">redis</span><span class="p">.</span><span class="n">from_url</span><span class="p">(</span><span class="n">os</span><span class="p">.</span><span class="n">getenv</span><span class="p">(</span><span class="s">"REDIS_URL"</span><span class="p">,</span> <span class="s">"redis://localhost:6379"</span><span class="p">))</span>
+                                                                          <span class="c1"># ...
+                                                                          </span>    <span class="n">jsonlinks</span> <span class="o">=</span> <span class="n">redis</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                                                          <span class="k">if</span> <span class="ow">not</span> <span class="n">jsonlinks</span><span class="p">:</span>
+                                                                          <span class="n">links</span> <span class="o">=</span> <span class="n">extract_links</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                                                          <span class="n">jsonlinks</span> <span class="o">=</span> <span class="n">json</span><span class="p">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">links</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+                                                                          <span class="n">redis</span><span class="p">.</span><span class="nb">set</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">jsonlinks</span><span class="p">)</span>
+                                                                        </code></pre></div></div>
+                                                                        
+                                                                        <p>This time the API service needs to know how to connect to the Redis instance as it is going to use it for caching.
+                                                                          This information can be made available at run time using the <code class="language-plaintext highlighter-rouge">REDIS_URL</code> environment variable.
+                                                                          A corresponding <code class="language-plaintext highlighter-rouge">ENV</code> entry is also added in the <code class="language-plaintext highlighter-rouge">Dockerfile</code> of the API service with a default value.</p>
+                                                                          
+                                                                          <p>A <code class="language-plaintext highlighter-rouge">redis</code> client instance is created using the hostname <code class="language-plaintext highlighter-rouge">redis</code> (same as the name of the service as we will see later) and the default Redis port <code class="language-plaintext highlighter-rouge">6379</code>.
+                                                                            We are first trying to see if a cache is present in the Redis store for a given URL, if not then we use the <code class="language-plaintext highlighter-rouge">extract_links</code> function as before and populate the cache for future attempts.</p>
+                                                                            
+                                                                            <p>Now, let’s look into the updated <code class="language-plaintext highlighter-rouge">docker-compose.yml</code> file:</p>
+                                                                            
+                                                                            <pre><code class="language-.term1">cat docker-compose.yml
+                                                                            </code></pre>
+                                                                            
+                                                                            <div class="language-yml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">version</span><span class="pi">:</span> <span class="s1">'</span><span class="s">3'</span>
+                                                                              
+                                                                              <span class="na">services</span><span class="pi">:</span>
+                                                                              <span class="na">api</span><span class="pi">:</span>
+                                                                              <span class="na">image</span><span class="pi">:</span> <span class="s">linkextractor-api:step5-python</span>
+                                                                              <span class="na">build</span><span class="pi">:</span> <span class="s">./api</span>
+                                                                              <span class="na">ports</span><span class="pi">:</span>
+                                                                              <span class="pi">-</span> <span class="s2">"</span><span class="s">5000:5000"</span>
+                                                                              <span class="na">environment</span><span class="pi">:</span>
+                                                                              <span class="pi">-</span> <span class="s">REDIS_URL=redis://redis:6379</span>
+                                                                              <span class="na">web</span><span class="pi">:</span>
+                                                                              <span class="na">image</span><span class="pi">:</span> <span class="s">linkextractor-web:step5-php</span>
+                                                                              <span class="na">build</span><span class="pi">:</span> <span class="s">./www</span>
+                                                                              <span class="na">ports</span><span class="pi">:</span>
+                                                                              <span class="pi">-</span> <span class="s2">"</span><span class="s">80:80"</span>
+                                                                              <span class="na">environment</span><span class="pi">:</span>
+                                                                              <span class="pi">-</span> <span class="s">API_ENDPOINT=http://api:5000/api/</span>
+                                                                              <span class="na">redis</span><span class="pi">:</span>
+                                                                              <span class="na">image</span><span class="pi">:</span> <span class="s">redis</span>
+                                                                            </code></pre></div></div>
+                                                                            
+                                                                            <p>The <code class="language-plaintext highlighter-rouge">api</code> service configuration largely remains the same as before, except the updated image tag and added environment variable <code class="language-plaintext highlighter-rouge">REDIS_URL</code> that points to the Redis service.
+                                                                              For the <code class="language-plaintext highlighter-rouge">web</code> service, we are using the custom <code class="language-plaintext highlighter-rouge">linkextractor-web:step5-php</code> image that will be built using the newly added <code class="language-plaintext highlighter-rouge">Dockerfile</code> in the <code class="language-plaintext highlighter-rouge">./www</code> folder.
+                                                                              We are no longer mounting the <code class="language-plaintext highlighter-rouge">./www</code> folder using the <code class="language-plaintext highlighter-rouge">volumes</code> config.
+                                                                              Finally, a new service named <code class="language-plaintext highlighter-rouge">redis</code> is added that will use the official image from DockerHub and needs no specific configurations for now.
+                                                                              This service is accessible to the Python API using its service name, the same way the API service is accessible to the PHP front-end service.</p>
+                                                                              
+                                                                              <p>Let’s boot these services up:</p>
+                                                                              
+                                                                              <pre><code class="language-.term1">docker-compose up -d --build
+                                                                              </code></pre>
+                                                                              
+                                                                              <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>... [OUTPUT REDACTED] ...
+                                                                                
+                                                                                Creating linkextractor_web_1   ... done
+                                                                                Creating linkextractor_api_1   ... done
+                                                                                Creating linkextractor_redis_1 ... done
+                                                                              </code></pre></div></div>
+                                                                              
+                                                                              <p>Now, that all three services are up, access the web interface by <a href="/" data-term=".term1" data-port="80">clicking the Link Extractor</a>.
+                                                                                There should be no visual difference from the previous step.
+                                                                                However, if you extract links from a page with a lot of links, the first time it should take longer, but the successive attempts to the same page should return the response fairly quickly.
+                                                                                To check whether or not the Redis service is being utilized, we can use <code class="language-plaintext highlighter-rouge">docker-compose exec</code> followed by the <code class="language-plaintext highlighter-rouge">redis</code> service name and the Redis CLI’s <a href="https://redis.io/commands/monitor">monitor</a> command:</p>
+                                                                                
+                                                                                <pre><code class="language-.term1">docker-compose exec redis redis-cli monitor
+                                                                                </code></pre>
+                                                                                
+                                                                                <p>Now, try to extract links from some web pages using the web interface and see the difference in Redis log entries for pages that are scraped the first time and those that are repeated.
+                                                                                  Before continuing further with the tutorial, stop the interactive <code class="language-plaintext highlighter-rouge">monitor</code> stream as a result of the above <code class="language-plaintext highlighter-rouge">redis-cli</code> command by pressing <code class="language-plaintext highlighter-rouge">Ctrl + C</code> keys while the interactive terminal is in focus.</p>
+                                                                                  
+                                                                                  <p>Now that we are not mounting the <code class="language-plaintext highlighter-rouge">/www</code> folder inside the container, local changes should not reflect in the running service:</p>
+                                                                                  
+                                                                                  <pre><code class="language-.term1">sed -i 's/Link Extractor/Super Link Extractor/g' www/index.php
+                                                                                  </code></pre>
+                                                                                  
+                                                                                  <p>Verify that the changes made locally do not reflect in the running service by reloading the web interface and then revert changes:</p>
+                                                                                  
+                                                                                  <pre><code class="language-.term1">git reset --hard
+                                                                                  </code></pre>
+                                                                                  
+                                                                                  <p>Now, shut these services down and get ready for the next step:</p>
+                                                                                  
+                                                                                  <pre><code class="language-.term1">docker-compose down
+                                                                                  </code></pre>
+                                                                                  
+                                                                                  <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>Stopping linkextractor_web_1   ... done
+                                                                                    Stopping linkextractor_redis_1 ... done
+                                                                                    Stopping linkextractor_api_1   ... done
+                                                                                    Removing linkextractor_web_1   ... done
+                                                                                    Removing linkextractor_redis_1 ... done
+                                                                                    Removing linkextractor_api_1   ... done
+                                                                                    Removing network linkextractor_default
+                                                                                  </code></pre></div></div>
+                                                                                  
+                                                                                  <p>We have successfully orchestrated three microservices to compose our Link Extractor application.
+                                                                                    We now have an application stack that represents the architecture illustrated in the figure shown in the introduction of this tutorial.
+                                                                                    In the next step we will explore how easy it is to swap components from an application with the microservice architecture.</p>
+                                                                                    
+                                                                                    <h2 id="step-6-swap-python-api-service-with-ruby">Step 6: Swap Python API Service with Ruby</h2>
+                                                                                    
+                                                                                    <p>Checkout the <code class="language-plaintext highlighter-rouge">step6</code> branch and list files in it.</p>
+                                                                                    
+                                                                                    <pre><code class="language-.term1">git checkout step6
+                                                                                      tree
+                                                                                    </code></pre>
+                                                                                    
+                                                                                    <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>.
+                                                                                      ├── README.md
+                                                                                      ├── api
+                                                                                      │   ├── Dockerfile
+                                                                                      │   ├── Gemfile
+                                                                                      │   └── linkextractor.rb
+                                                                                      ├── docker-compose.yml
+                                                                                      ├── logs
+                                                                                      └── www
+                                                                                      ├── Dockerfile
+                                                                                      └── index.php
+                                                                                      
+                                                                                      3 directories, 7 files
+                                                                                    </code></pre></div></div>
+                                                                                    
+                                                                                    <p>Some significant changes from the previous step include:</p>
+                                                                                    
+                                                                                    <ul>
+                                                                                      <li>The API service written in Python is replaced with a similar Ruby implementation</li>
+                                                                                      <li>The <code class="language-plaintext highlighter-rouge">API_ENDPOINT</code> environment variable is updated to point to the new Ruby API service</li>
+                                                                                      <li>The link extraction cache event (HIT/MISS) is logged and is persisted using volumes</li>
+                                                                                    </ul>
+                                                                                    
+                                                                                    <p>Notice that the <code class="language-plaintext highlighter-rouge">./api</code> folder does not contain any Python scripts, instead, it now has a Ruby file and a <code class="language-plaintext highlighter-rouge">Gemfile</code> to manage dependencies.</p>
+                                                                                    
+                                                                                    <p>Let’s have a quick walk through the changed files:</p>
+                                                                                    
+                                                                                    <pre><code class="language-.term1">cat api/linkextractor.rb
+                                                                                    </code></pre>
+                                                                                    
+                                                                                    <div class="language-rb highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">#!/usr/bin/env ruby</span>
+                                                                                      <span class="c1"># encoding: utf-8</span>
+                                                                                      
+                                                                                      <span class="nb">require</span> <span class="s2">"sinatra"</span>
+                                                                                      <span class="nb">require</span> <span class="s2">"open-uri"</span>
+                                                                                      <span class="nb">require</span> <span class="s2">"uri"</span>
+                                                                                      <span class="nb">require</span> <span class="s2">"nokogiri"</span>
+                                                                                      <span class="nb">require</span> <span class="s2">"json"</span>
+                                                                                      <span class="nb">require</span> <span class="s2">"redis"</span>
+                                                                                      
+                                                                                      <span class="n">set</span> <span class="ss">:protection</span><span class="p">,</span> <span class="ss">:except</span><span class="o">=&gt;</span><span class="ss">:path_traversal</span>
+                                                                                      
+                                                                                      <span class="n">redis</span> <span class="o">=</span> <span class="no">Redis</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="ss">url: </span><span class="no">ENV</span><span class="p">[</span><span class="s2">"REDIS_URL"</span><span class="p">]</span> <span class="o">||</span> <span class="s2">"redis://localhost:6379"</span><span class="p">)</span>
+                                                                                      
+                                                                                      <span class="no">Dir</span><span class="p">.</span><span class="nf">mkdir</span><span class="p">(</span><span class="s2">"logs"</span><span class="p">)</span> <span class="k">unless</span> <span class="no">Dir</span><span class="p">.</span><span class="nf">exist?</span><span class="p">(</span><span class="s2">"logs"</span><span class="p">)</span>
+                                                                                      <span class="n">cache_log</span> <span class="o">=</span> <span class="no">File</span><span class="p">.</span><span class="nf">new</span><span class="p">(</span><span class="s2">"logs/extraction.log"</span><span class="p">,</span> <span class="s2">"a"</span><span class="p">)</span>
+                                                                                      
+                                                                                      <span class="n">get</span> <span class="s2">"/"</span> <span class="k">do</span>
+                                                                                      <span class="s2">"Usage: http://&lt;hostname&gt;[:&lt;prt&gt;]/api/&lt;url&gt;"</span>
+                                                                                      <span class="k">end</span>
+                                                                                      
+                                                                                      <span class="n">get</span> <span class="s2">"/api/*"</span> <span class="k">do</span>
+                                                                                      <span class="n">url</span> <span class="o">=</span> <span class="p">[</span><span class="n">params</span><span class="p">[</span><span class="s1">'splat'</span><span class="p">].</span><span class="nf">first</span><span class="p">,</span> <span class="n">request</span><span class="p">.</span><span class="nf">query_string</span><span class="p">].</span><span class="nf">reject</span><span class="p">(</span><span class="o">&amp;</span><span class="ss">:empty?</span><span class="p">).</span><span class="nf">join</span><span class="p">(</span><span class="s2">"?"</span><span class="p">)</span>
+                                                                                      <span class="n">cache_status</span> <span class="o">=</span> <span class="s2">"HIT"</span>
+                                                                                      <span class="n">jsonlinks</span> <span class="o">=</span> <span class="n">redis</span><span class="p">.</span><span class="nf">get</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                                                                      <span class="k">if</span> <span class="n">jsonlinks</span><span class="p">.</span><span class="nf">nil?</span>
+                                                                                      <span class="n">cache_status</span> <span class="o">=</span> <span class="s2">"MISS"</span>
+                                                                                      <span class="n">jsonlinks</span> <span class="o">=</span> <span class="no">JSON</span><span class="p">.</span><span class="nf">pretty_generate</span><span class="p">(</span><span class="n">extract_links</span><span class="p">(</span><span class="n">url</span><span class="p">))</span>
+                                                                                      <span class="n">redis</span><span class="p">.</span><span class="nf">set</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">jsonlinks</span><span class="p">)</span>
+                                                                                      <span class="k">end</span>
+                                                                                      
+                                                                                      <span class="n">cache_log</span><span class="p">.</span><span class="nf">puts</span> <span class="s2">"</span><span class="si">#{</span><span class="no">Time</span><span class="p">.</span><span class="nf">now</span><span class="p">.</span><span class="nf">to_i</span><span class="si">}</span><span class="se">\t</span><span class="si">#{</span><span class="n">cache_status</span><span class="si">}</span><span class="se">\t</span><span class="si">#{</span><span class="n">url</span><span class="si">}</span><span class="s2">"</span>
+                                                                                      
+                                                                                      <span class="n">status</span> <span class="mi">200</span>
+                                                                                      <span class="n">headers</span> <span class="s2">"content-type"</span> <span class="o">=&gt;</span> <span class="s2">"application/json"</span>
+                                                                                      <span class="n">body</span> <span class="n">jsonlinks</span>
+                                                                                      <span class="k">end</span>
+                                                                                      
+                                                                                      <span class="k">def</span> <span class="nf">extract_links</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                                                                                      <span class="n">links</span> <span class="o">=</span> <span class="p">[]</span>
+                                                                                      <span class="n">doc</span> <span class="o">=</span> <span class="no">Nokogiri</span><span class="o">::</span><span class="no">HTML</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="n">url</span><span class="p">))</span>
+                                                                                      <span class="n">doc</span><span class="p">.</span><span class="nf">css</span><span class="p">(</span><span class="s2">"a"</span><span class="p">).</span><span class="nf">each</span> <span class="k">do</span> <span class="o">|</span><span class="n">link</span><span class="o">|</span>
+                                                                                      <span class="n">text</span> <span class="o">=</span> <span class="n">link</span><span class="p">.</span><span class="nf">text</span><span class="p">.</span><span class="nf">strip</span><span class="p">.</span><span class="nf">split</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="s2">" "</span><span class="p">)</span>
+                                                                                      <span class="k">begin</span>
+                                                                                      <span class="n">links</span><span class="p">.</span><span class="nf">push</span><span class="p">({</span>
+                                                                                        <span class="ss">text: </span><span class="n">text</span><span class="p">.</span><span class="nf">empty?</span> <span class="p">?</span> <span class="s2">"[IMG]"</span> <span class="p">:</span> <span class="n">text</span><span class="p">,</span>
+                                                                                        <span class="ss">href: </span><span class="no">URI</span><span class="p">.</span><span class="nf">join</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">link</span><span class="p">[</span><span class="s2">"href"</span><span class="p">])</span>
+                                                                                        <span class="p">})</span>
+                                                                                        <span class="k">rescue</span>
+                                                                                        <span class="k">end</span>
+                                                                                        <span class="k">end</span>
+                                                                                        <span class="n">links</span>
+                                                                                        <span class="k">end</span>
+                                                                                      </code></pre></div></div>
+                                                                                      
+                                                                                      <p>This Ruby file is almost equivalent to what we had in Python before, except, in addition to that it also logs the link extraction requests and corresponding cache events.
+                                                                                        In a microservice architecture application swapping components with an equivalent one is easy as long as the expectations of consumers of the component are maintained.</p>
+                                                                                        
+                                                                                        <pre><code class="language-.term1">cat api/Dockerfile
+                                                                                        </code></pre>
+                                                                                        
+                                                                                        <div class="language-dockerfile highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">FROM</span><span class="s">       ruby:2.6</span>
+                                                                                          <span class="k">LABEL</span><span class="s">      maintainer="Sawood Alam &lt;@ibnesayeed&gt;"</span>
+                                                                                          
+                                                                                          <span class="k">ENV</span><span class="s">        LANG C.UTF-8</span>
+                                                                                          <span class="k">ENV</span><span class="s">        REDIS_URL="redis://localhost:6379"</span>
+                                                                                          
+                                                                                          <span class="k">WORKDIR</span><span class="s">    /app</span>
+                                                                                          <span class="k">COPY</span><span class="s">       Gemfile /app/</span>
+                                                                                          <span class="k">RUN        </span>bundle <span class="nb">install</span>
+                                                                                          
+                                                                                          <span class="k">COPY</span><span class="s">       linkextractor.rb /app/</span>
+                                                                                          <span class="k">RUN        </span><span class="nb">chmod </span>a+x linkextractor.rb
+                                                                                          
+                                                                                          <span class="k">CMD</span><span class="s">        ["./linkextractor.rb", "-o", "0.0.0.0"]</span>
+                                                                                        </code></pre></div></div>
+                                                                                        
+                                                                                        <p>Above <code class="language-plaintext highlighter-rouge">Dockerfile</code> is written for the Ruby script and it is pretty much self-explanatory.</p>
+                                                                                        
+                                                                                        <pre><code class="language-.term1">cat docker-compose.yml
+                                                                                        </code></pre>
+                                                                                        
+                                                                                        <div class="language-yml highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="na">version</span><span class="pi">:</span> <span class="s1">'</span><span class="s">3'</span>
+                                                                                          
+                                                                                          <span class="na">services</span><span class="pi">:</span>
+                                                                                          <span class="na">api</span><span class="pi">:</span>
+                                                                                          <span class="na">image</span><span class="pi">:</span> <span class="s">linkextractor-api:step6-ruby</span>
+                                                                                          <span class="na">build</span><span class="pi">:</span> <span class="s">./api</span>
+                                                                                          <span class="na">ports</span><span class="pi">:</span>
+                                                                                          <span class="pi">-</span> <span class="s2">"</span><span class="s">4567:4567"</span>
+                                                                                          <span class="na">environment</span><span class="pi">:</span>
+                                                                                          <span class="pi">-</span> <span class="s">REDIS_URL=redis://redis:6379</span>
+                                                                                          <span class="na">volumes</span><span class="pi">:</span>
+                                                                                          <span class="pi">-</span> <span class="s">./logs:/app/logs</span>
+                                                                                          <span class="na">web</span><span class="pi">:</span>
+                                                                                          <span class="na">image</span><span class="pi">:</span> <span class="s">linkextractor-web:step6-php</span>
+                                                                                          <span class="na">build</span><span class="pi">:</span> <span class="s">./www</span>
+                                                                                          <span class="na">ports</span><span class="pi">:</span>
+                                                                                          <span class="pi">-</span> <span class="s2">"</span><span class="s">80:80"</span>
+                                                                                          <span class="na">environment</span><span class="pi">:</span>
+                                                                                          <span class="pi">-</span> <span class="s">API_ENDPOINT=http://api:4567/api/</span>
+                                                                                          <span class="na">redis</span><span class="pi">:</span>
+                                                                                          <span class="na">image</span><span class="pi">:</span> <span class="s">redis</span>
+                                                                                        </code></pre></div></div>
+                                                                                        
+                                                                                        <p>The <code class="language-plaintext highlighter-rouge">docker-compose.yml</code> file has a few minor changes in it.
+                                                                                          The <code class="language-plaintext highlighter-rouge">api</code> service image is now named <code class="language-plaintext highlighter-rouge">linkextractor-api:step6-ruby</code>, the port mapping is changed from <code class="language-plaintext highlighter-rouge">5000</code> to <code class="language-plaintext highlighter-rouge">4567</code> (which is the default port for Sinatra server), and the <code class="language-plaintext highlighter-rouge">API_ENDPOINT</code> environment variable in the <code class="language-plaintext highlighter-rouge">web</code> service is updated accordingly so that the PHP code can talk to it.</p>
+                                                                                          
+                                                                                          <p>With these in place, let’s boot our service stack:</p>
+                                                                                          
+                                                                                          <pre><code class="language-.term1">docker-compose up -d --build
+                                                                                          </code></pre>
+                                                                                          
+                                                                                          <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>... [OUTPUT REDACTED] ...
+                                                                                            
+                                                                                            Successfully built b713eef49f55
+                                                                                            Successfully tagged linkextractor-api:step6-ruby
+                                                                                            Creating linkextractor_web_1   ... done
+                                                                                            Creating linkextractor_api_1   ... done
+                                                                                            Creating linkextractor_redis_1 ... done
+                                                                                          </code></pre></div></div>
+                                                                                          
+                                                                                          <p>We should now be able to access the API (using the updated port number):</p>
+                                                                                          
+                                                                                          <pre><code class="language-.term1">curl -i http://localhost:4567/api/http://example.com/
+                                                                                          </code></pre>
+                                                                                          
+                                                                                          <div class="language-json highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="err">HTTP/</span><span class="mf">1.1</span><span class="w"> </span><span class="mi">200</span><span class="w"> </span><span class="err">OK</span><span class="w">
+                                                                                          </span><span class="err">Content-Type:</span><span class="w"> </span><span class="err">application/json</span><span class="w">
+                                                                                          </span><span class="err">Content-Length:</span><span class="w"> </span><span class="mi">96</span><span class="w">
+                                                                                          </span><span class="err">X-Content-Type-Options:</span><span class="w"> </span><span class="err">nosniff</span><span class="w">
+                                                                                          </span><span class="err">Server:</span><span class="w"> </span><span class="err">WEBrick/</span><span class="mf">1.4</span><span class="err">.</span><span class="mi">2</span><span class="w"> </span><span class="err">(Ruby/</span><span class="mf">2.5</span><span class="err">.</span><span class="mi">1</span><span class="err">/</span><span class="mi">2018-03-29</span><span class="err">)</span><span class="w">
+                                                                                          </span><span class="err">Date:</span><span class="w"> </span><span class="err">Mon,</span><span class="w"> </span><span class="mi">24</span><span class="w"> </span><span class="err">Sep</span><span class="w"> </span><span class="mi">2018</span><span class="w"> </span><span class="mi">01</span><span class="err">:</span><span class="mi">41</span><span class="err">:</span><span class="mi">35</span><span class="w"> </span><span class="err">GMT</span><span class="w">
+                                                                                          </span><span class="err">Connection:</span><span class="w"> </span><span class="err">Keep-Alive</span><span class="w">
+                                                                                            
+                                                                                          </span><span class="p">[</span><span class="w">
+                                                                                          </span><span class="p">{</span><span class="w">
+                                                                                          </span><span class="nl">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"More information..."</span><span class="p">,</span><span class="w">
+                                                                                          </span><span class="nl">"href"</span><span class="p">:</span><span class="w"> </span><span class="s2">"http://www.iana.org/domains/example"</span><span class="w">
+                                                                                          </span><span class="p">}</span><span class="w">
+                                                                                          </span><span class="p">]</span><span class="w">
+                                                                                          </span></code></pre></div></div>
+                                                                                          
+                                                                                          <p>Now, open the web interface by <a href="/" data-term=".term1" data-port="80">clicking the Link Extractor</a> and extract links of a few URLs.
+                                                                                            Also, try to repeat these attempts for some URLs.
+                                                                                            If everything is alright, the web application should behave as before without noticing any changes in the API service (which is completely replaced).</p>
+                                                                                            
+                                                                                            <p>We can shut the stack down now:</p>
+                                                                                            
+                                                                                            <pre><code class="language-.term1">docker-compose down
+                                                                                            </code></pre>
+                                                                                            
+                                                                                            <p>Since we have persisted logs, they should still be available after the services are gone:</p>
+                                                                                            
+                                                                                            <pre><code class="language-.term1">cat logs/extraction.log
+                                                                                            </code></pre>
+                                                                                            
+                                                                                            <div class="language-plaintext highlighter-rouge"><div class="highlight"><pre class="highlight"><code>1537753295      MISS    http://example.com/
+                                                                                              1537753600      HIT     http://example.com/
+                                                                                              1537753635      MISS    https://training.play-with-docker.com/
+                                                                                            </code></pre></div></div>
+                                                                                            
+                                                                                            <p>This illustrates that the caching is functional as the second attempt to the <code class="language-plaintext highlighter-rouge">http://example.com/</code> resulted in a cache <code class="language-plaintext highlighter-rouge">HIT</code>.</p>
+                                                                                            
+                                                                                            <p>In this step we explored the possibility of swapping components of an application with microservice architecture with their equivalents without impacting rest of the parts of the stack.
+                                                                                              We have also explored data persistence using bind mount volumes that persists even after the containers writing to the volume are gone.</p>
+                                                                                              
+                                                                                              <p>So far, we have used <code class="language-plaintext highlighter-rouge">docker-compose</code> utility to orchestrate the application stack, which is good for development environment, but for production environment we use <code class="language-plaintext highlighter-rouge">docker stack deploy</code> command to run the application in a <a href="/swarm-stack-intro">Docker Swarm Cluster</a>.
+                                                                                                It is left for you as an assignment to deploy this application in a Docker Swarm Cluster.</p>
+                                                                                                
+                                                                                                <h2 id="conclusions">Conclusions</h2>
+                                                                                                
+                                                                                                <p>We started this tutorial with a simple Python script that scrapes links from a give web page URL.
+                                                                                                  We demonstrated various difficulties in running the script.
+                                                                                                  We then illustrated how easy to run and portable the script becomes onces it is containerized.
+                                                                                                  In the later steps we gradually evolved the script into a multi-service application stack.
+                                                                                                  In the process we explored various concepts of microservice architecture and how Docker tools can be helpful in orchestrating a multi-service stack.
+                                                                                                  Finally, we demonstrated the ease of microservice component swapping and data persistence.</p>
+                                                                                                  
+                                                                                                  <p>The next step would be to learn how to deploy such service stacks in a <a href="/swarm-stack-intro">Docker Swarm Cluster</a>.</p>
+                                                                                                  
+                                                                                                  <p>As an aside, here are some introductory Docker slides.</p>
+                                                                                                  
+                                                                                                  <iframe src="//www.slideshare.net/slideshow/embed_code/key/qAjE65X2E8tkxe" width="700" height="450" frameborder="0" marginwidth="0" marginheight="0" scrolling="no" style="border:1px solid #CCC; border-width:1px; margin-bottom:5px; max-width: 100%;" allowfullscreen="" class=" bf_frame_init"> </iframe>
+                                                                                                  <div style="margin-bottom:5px"> <strong> <a href="//www.slideshare.net/ibnesayeed/introducing-docker-application-containerization-service-orchestration" title="Introducing Docker - Application Containerization &amp; Service Orchestration" target="_blank">Introducing Docker - Application Containerization &amp; Service Orchestration</a> </strong> by <strong><a href="//www.slideshare.net/ibnesayeed" target="_blank">Sawood Alam</a></strong> </div>
+                                                                                                  
+                                                                                                  <hr>
+                                                                                                  
+                                                                                                </div>
+                                                                                              </article>
+                                                                                              <div class="mt10 social-share">
+                                                                                                Share this on →
+                                                                                                <a href="https://twitter.com/intent/tweet?text=Application Containerization and Microservice Orchestration&amp;url=https://training.play-with-docker.com/microservice-orchestration/&amp;via=docker&amp;related=docker" rel="nofollow" target="_blank" title="Share on Twitter"><img src="/images/twitter.svg" alt="https://twitter.com/docker" style="width:30px;display:inline;"></a>
+                                                                                                <a href="https://facebook.com/sharer.php?u=https://training.play-with-docker.com/microservice-orchestration/" rel="nofollow" target="_blank" title="Share on Facebook"><img src="/images/facebook.svg" style="width:30px;display:inline;" alt="https://www.facebook.com/docker.run"></a>
+                                                                                                <a href="https://plus.google.com/share?url=https://training.play-with-docker.com/microservice-orchestration/" rel="nofollow" target="_blank" title="Share on Google+"><img src="https://www.gstatic.com/images/icons/gplus-64.png" alt="Share on Google+" style="width:30px;display:inline;"></a>
+                                                                                                <a href="http://www.linkedin.com/shareArticle?mini=true&amp;url=https://training.play-with-docker.com/microservice-orchestration/&amp;title=Play%20with%20Docker%20Classroom&amp;source=https://training.play-with-docker.com" rel="nofollow" target="_blank" title="Share on LinkedIn"><img src="https://simplesharebuttons.com/images/somacro/linkedin.png" alt="LinkedIn" style="width:30px;display:inline;"></a>
+                                                                                              </div>
+                                                                                              
+                                                                                            </div>
+                                                                                          </body>
+                                                                                          </html>
