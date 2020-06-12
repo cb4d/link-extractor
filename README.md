@@ -9,7 +9,7 @@ I've copied the tutorial instructions into [here](./docs/docker-microservice-gui
 ### Tasks
 
 1. ~~Create a repo for the project and push to my personal github~~
-2. Clone the python link extractor in a submodule for reference
+2. ~~Clone the python link extractor in a submodule for reference~~
 3. Replicate the scraper script from step 0 using ktor
 4. Install and configure docker locally, for use in the subsequent steps
 5. Go through steps 1-5, using ktor instead of python along the way

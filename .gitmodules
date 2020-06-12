@@ -1,0 +1,3 @@
+[submodule "link-extractor-python"]
+	path = link-extractor-python
+	url = git@github.com:ibnesayeed/linkextractor.git
