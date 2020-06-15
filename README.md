@@ -11,7 +11,9 @@ I've copied the tutorial instructions into [here](./docs/docker-microservice-gui
 1. ~~Create a repo for the project and push to my personal github~~
 2. ~~Clone the python link extractor in a submodule for reference~~
 3. ~~Replicate the scraper script from step 0 using kotlin~~
-4. Install and configure docker locally, for use in the subsequent steps
+4. ~~Install and configure docker locally, for use in the subsequent steps~~
 5. Go through steps 1-5, using ktor instead of python along the way
+  - ~~Step 1: Containerized link extractor script~~
+  - Step 2: Link extractor module with full uri and anchor text
 6. Replace the scraper api service with one written in vertx
 7. Complete step 6 of the tutorial, swapping out the api service
