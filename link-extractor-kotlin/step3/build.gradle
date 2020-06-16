@@ -1,0 +1,43 @@
+plugins {
+  id "org.jetbrains.kotlin.jvm" version '1.3.70'
+  id "org.jetbrains.kotlin.plugin.serialization" version '1.3.70'
+
+  id 'com.github.johnrengelman.shadow' version '4.0.4'
+}
+
+apply plugin: "com.github.johnrengelman.shadow"
+apply plugin: 'application'
+
+repositories {
+  mavenCentral()
+  jcenter()
+}
+
+dependencies {
+  ext.ktor_version = '1.3.2'
+
+  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8"
+
+  implementation 'org.jsoup:jsoup:1.13.1'
+
+  implementation "io.ktor:ktor-server-netty:$ktor_version"
+  implementation "io.ktor:ktor-serialization:$ktor_version"
+
+  implementation "ch.qos.logback:logback-classic:1.2.3"
+}
+
+sourceCompatibility = 1.8
+compileKotlin { kotlinOptions.jvmTarget = "1.8" }
+
+// make /src the root of the source
+sourceSets {
+  main.kotlin.srcDirs += 'src'
+}
+
+mainClassName = 'io.ktor.server.netty.EngineMain'
+
+shadowJar {
+    baseName = 'link-extractor'
+    classifier = null
+    version = null
+}

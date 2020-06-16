@@ -15,6 +15,6 @@ I've copied the tutorial instructions into [here](./docs/docker-microservice-gui
 5. Go through steps 1-5, using ktor instead of python along the way
   - ~~Step 1: Containerized link extractor script~~
   - ~~Step 2: Link extractor module with full uri and anchor text~~
-  - Step 3: Link Extractor API Service
-6. Replace the scraper api service with one written in vertx
-7. Complete step 6 of the tutorial, swapping out the api service
+  - ~~Step 3: Link Extractor API Service~~
+  - Step 4: Link Extractor API and Web Front End Services
+6. Complete step 6 of the tutorial, swapping out the api service with one written in vertx
